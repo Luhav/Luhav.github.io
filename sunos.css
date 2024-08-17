@@ -1,0 +1,47 @@
+@media screen and (orientation:landscape) {
+	body {
+		margin-left:	16vw;
+		margin-right:	16vw;
+	}
+}
+
+div.window {
+	margin-bottom: 1em;
+	border-style: ridge;
+	border-width: 5pt;
+	border-color: #DB6097 #B24D7A #B24D7A #DB6097;
+}
+
+div.window-content {
+	border-style: groove;
+	border-width: 2pt;
+	border-color: #CCD0E2 #AEB2C3 #AEB2C3 #CCD0E2;
+	flex-grow: 1;
+}
+
+body {
+	background-color: #AEB2C3;
+	color: black;
+}
+
+.flex {
+	display: flex;
+	flex-wrap: wrap;
+}
+
+.title {
+	background-color: #B24D7A;
+	color: white;
+	border-style: groove;
+	border-width: 2pt;
+	border-color: #DB6097 #B24D7A #B24D7A #DB6097;
+}
+
+h1, h2, h3, h4, h6, h6 {
+	margin: 0;
+}
+
+a {
+	/* color: #0013FF; */
+	color: black;
+}
