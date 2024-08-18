@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
 @media screen and (orientation:landscape) {
 	body {
 		margin-left:	16vw;
@@ -22,6 +24,8 @@ div.window-content {
 body {
 	background-color: #AEB2C3;
 	color: black;
+	font-family: "Atkinson Hyperlegible", "Helvetica", sans-serif;
+	font-size: 14pt;
 }
 
 .flex {
