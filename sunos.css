@@ -21,6 +21,14 @@ div.window-content {
 	flex-grow: 1;
 }
 
+blockquote {
+	border-style: none none none groove;
+	border-width: 2pt;
+	border-color: #CCD0E2;
+	margin-left: 1em;
+	padding-left: 1em;
+}
+
 body {
 	background-color: #AEB2C3;
 	color: black;
@@ -48,4 +56,8 @@ h1, h2, h3, h4, h6, h6 {
 a {
 	/* color: #0013FF; */
 	color: black;
+}
+
+p.attribution {
+	margin-left: 1em;
 }
