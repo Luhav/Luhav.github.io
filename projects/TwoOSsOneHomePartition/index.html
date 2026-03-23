@@ -1,0 +1,710 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 strict//EN"
+"http://www.w3.org/TR/html4/strict.dtd">
+<html>
+	<head>
+		<link rel="stylesheet" href="/sunos.css">
+		<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/tomorrow-night-bright.min.css">
+		<script src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+		<script>hljs.highlightAll();</script>
+	</head>
+	<body>
+		<div class="window">
+			<div class="title">
+				<h1 style="display:inline;">Two OSs, One Home Partition</h1>
+			</div>
+			<div class="window-content">
+				<h2>Abstract</h2>
+				<p>
+					This project investigates the feasibility of sharing a
+					single home partition between two bare-metal UNIX-like
+					operating systems. The objective is to eliminate the
+					redundancy and configuration complexity associated with
+					virtual machines while maintaining consistent user
+					environments across both systems.
+				</p>
+
+				<p>
+					The method involved manually partitioning a GPT disk into
+					four segments: an EFI system partition, a root partition for
+					each OS, and a shared home partition using ZFS. Special
+					attention was given to maintaining consistent UIDs across
+					both systems to preserve file ownership integrity. Custom
+					bootup and shutdown procedures were implemented in each OS
+					to ensure the ZFS pool was properly imported and exported.
+				</p>
+				<p>
+					Results demonstrate that both operating systems can reliably
+					access and modify a shared home directory, with changes
+					reflected immediately across environments.
+				</p>
+			</div>
+			<div class="window-content">
+				<h2>Introduction</h2>
+				<p>
+				Sometimes one may find themself in need of both Linux and
+				FreeBSD, especially when administrating a large and diverse
+				network of both servers and clients. Many administrators find VMs
+				adequate for this purpose, but networking, USB passthrough, and
+				many other essential functions of a VM are difficult to set up
+				correctly, and often break when the OS or VM host update. There
+				is a desireable simplicity to running your OSs baremetal. But
+				even running your OSs baremetal, doing away with having to do
+				that extra networking and USB configuration for two different
+				VMs, one may wish they could configure their FreeBSD &amp; Linux
+				not only simultaneously, but that any changes made to their
+				configuration on one would be seamlessly and instantly applied
+				to the other.
+				</p>
+				<p>
+				This project aims to share a partition mounted to <code>/home/
+				</code> between a dual-boot installation of FreeBSD &amp; Linux.
+				</p>
+			</div>
+			<div class="window-content">
+				<h2>Method</h2>
+				<h3>Equipment</h3>
+				<ul>
+					<li>
+						64-bit IBM-compatible PC with UEFI firmware and an internet connection
+					</li>
+					<li>
+						FreeBSD install media, can be obtained at <a href="https://download.freebsd.org/releases/arm64/aarch64/ISO-IMAGES/">download.freebsd.org/releases/arm64/aarch64/ISO-IMAGES/</a>
+						<br><small>(experiment performed with 14.0-release)</small>
+					</li>
+					<li>
+						Artix Linux base OpenRC install media, can be obtained at <a href="https://iso.artixlinux.org/isos.php">iso.artixlinux.org/isos.php</a>
+						<br><small>(experiment performed with artix-base-openrc-20230814)</small>
+					</li>
+					<li>
+						Empty internal storage media of at least 60GiB<br>
+						<small>(experiment performed with 100GiB SATA HDD)</small>
+					</li>
+				</ul>
+				<p>
+					Artix OpenRC was chosen largely because it is the Linux
+					distribution I am most comfortable with. I am confident that
+					this could easily be adapted to Gentoo with OpenRC, or even
+					to a more traditional Systemd-based distribution such as
+					Arch if you are comfortable with writing Systemd service
+					scripts. However, it is important that a distro which can be
+					installed without a graphical installer is used, as most
+					graphical installers either do not provide the low-level
+					control necessary to make this work or make changes to the
+					shared partitions which will cause conflicts with FreeBSD.
+				</p>
+				<h4>Partition layout</h4>
+				<table>
+					<thead>
+						<tr>
+							<th style="text-align: right;">slice№</th>
+							<th>size</th>
+							<th style="text-align: right;">type</th>
+							<th style="text-align: left;">filesystem</th>
+							<th>purpose</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td style="text-align: right;">1</td>
+							<td>512MiB</td>
+							<td style="text-align: right;">efi</td>
+							<td style="text-align: left;">msdosfs</td>
+							<td>EFI boot partition</td>
+						</tr>
+						<tr>
+							<td style="text-align: right;">2</td>
+							<td>20GiB</td>
+							<td style="text-align: right;">freebsd-ufs</td>
+							<td style="text-align: left;">ufs</td>
+							<td>FreeBSD root</td>
+						</tr>
+						<tr>
+							<td style="text-align: right;">3</td>
+							<td>20GiB</td>
+							<td style="text-align: right;">linux-data</td>
+							<td style="text-align: left;">ext4</td>
+							<td>Linux root</td>
+						</tr>
+						<tr>
+							<td style="text-align: right;">4</td>
+							<td>remaining</td>
+							<td style="text-align: right;">zfs</td>
+							<td style="text-align: left;">zfs</td>
+							<td>Home partition</td>
+						</tr>
+					</tbody>
+				</table>
+				<p>
+					I decided to use ZFS as the shared filesystem as it's the
+					only filesystem both Linux and FreeBSD both support reading
+					from and writing to, which also supports UNIX file
+					attributes.
+				</p>
+				<p>
+					Remember that applications and such will still be installed
+					to the root, not the home partition. So if you're expecting
+					to install a lot of big software or something, one may wish
+					to embiggen those 20GiB root partitions as space allows.
+				</p>
+				<p>
+					There are no SWAP partitions. Through preliminary research,
+					I determined FreeBSD and Linux SWAP partitions are not
+					compatible, so one would need separate a SWAP partition for
+					each OS. Most computers nowadays have enough RAM that you
+					can live without SWAP, but if you really need SWAP, I would
+					suggest using SWAPfiles instead.
+				</p>
+				<h3>Procedure</h3>
+				<p>
+					I decided to install FreeBSD first, because it has the
+					user-friendly TUI Partition Editor, <code>sade</code>.
+					This could be done the other way around if you're
+					comfortable with fdisk or gpart or whatever else your
+					Linux distro's installer comes with, but this makes it
+					much easier to make sure your partitions (which will
+					become difficult to keep track of) are all sane.
+				</p>
+				<p>
+					I followed the normal installation process up until I reached the Partitioning step.
+					Instead of any of the guided options, I selected Manual Disk Setup.
+				</p>
+				<img loading="lazy" src="BSD-Manual.png" alt="FreeBSD Installer on the Partitioning step with Manual highlighted">
+				<p>
+					I <span style="color:black; background:DarkGray;">
+					<font color="red">C</font>reate</span>d a GPT partition
+					scheme. Then I <span style="color:black; background:DarkGray;">
+					<font color="red">C</font>reate</span>d a new partition of
+					the Type <code>efi</code>, Size <code>512MB</code>
+					<small>(remember, what FreeBSD refers to as "MB" are
+					actually MiB)</small>, and Mountpoint <code>/boot/efi</code>.
+					I chose this size because I needed to fit FreeBSD's
+					bootloader, Linux's bootloader, and rEFInd in there. I
+					acknowledge that it may be much more than necessary, but
+					since drives are measured in terabytes nowadays, I was
+					not worried about having a few MiB of unused space.
+				</p>
+				<img loading="lazy" src="BSD-AddEFI.png" alt="Add Partiton. Type: efi. Size: 512MB. Mountpoint: /boot/efi. Label is left empty.">
+				<p>
+					Then I <span style="color:black; background:DarkGray;">
+					<font color="red">C</font>reate</span>d the partition for
+					the FreeBSD system of the Type <code>freebsd-ufs</code>,
+					Size <code>20GB</code>, and Mountpoint <code>/</code>.
+				</p>
+				<img loading="lazy" src="BSD-AddUFS.png" alt="Add Partiton. Type: freebsd-ufs. Size: 20GB. Mountpoint: /. Label: FreeBSD."></p>
+				<p>
+					Then I <span style="color:black; background:DarkGray;">
+					<font color="red">C</font>reate</span>d the partition for
+					the Linux system of the Type <code>linux-data</code>,
+					Size <code>20GB</code>, and no Mountpoint.
+				</p>
+				<img loading="lazy" src="BSD-AddLinux.png" alt="Add Partiton. Type: linux-data. Size: 20GB. Mountpoint is left empty. Label: Linux.">
+				<p>
+					I did not bother to give the Linux partition a mountpoint.
+					This will be an ext4 filesystem, and FreeBSD can't read
+					ext4 natively (despite prevalent claims to the contrary),
+					so trying to mount it would be futile.
+				</p>
+				<p>
+					Then I finally <span style="color:black; background:DarkGray;">
+					<font color="red">C</font>reate</span>d the home partition,
+					with the Type <code>freebsd-zfs</code> and Mountpoint
+					<code>/home</code>. FreeBSD automatically populated the Size
+					field with the value required to fill the remainder of the
+					drive, so I left it at its default value of <code>59GB</code>.
+				</p>
+				<p>
+					I am unsure why FreeBSD calls it <code>freebsd-zfs</code>,
+					but it is no cause for concern&mdash;Linux mounts it just
+					fine with OpenZFS.
+				</p>
+				<p>
+					The <cite>FreeBSD Handbook</cite> asserts that
+					<code>/home/</code> is simply a softlink to
+					<code>/usr/home/</code>, and that we should mount our home
+					partition there. However, during preliminary experimentation
+					I determined this assertion untrue, and new users' home
+					directories are created directly at <code>/home/</code>.
+				</p>
+				<img loading="lazy" src="BSD-AddZFS.png" alt="Add Partiton. Type: freebsd-zfs. Size: 59GB. Mountpoint: /home. Label: Home.">
+				<p>
+					See the following figure for reference of the final
+					partition table:
+				</p>
+				<img loading="lazy" src="BSD-FinalPartitions.png" alt="Partition Editor: ada0, 100GB, GPT; ada0p1, 512 MB, efi, /boot/efi; ada0p2, 20 GB, freebsd-ufs, /; ada0p3, 20 GB, linux-data; ada0p4, 59 GB, freebsd-zfs, /home">
+				<p>
+					After double-, triple-, and quadruple-checking that I got
+					everything right, I <span style="color:black; background:DarkGray;">
+					<font color="red">F</font>inish</span>ed the partitioning.
+				</p>
+				<p>
+					FreeBSD installed all the base files, asked for a root
+					password, asked to set up networking interfaces, and so on.
+					I completed those steps as normal until it asked if want to
+					Add User Accounts, to which I answered <span style="color:black; background:DarkGray;">
+					<font color="red">Y</font>es</span>.
+				</p>
+				<p>
+					FreeBSD starts counting UIDs from 1001, while Linux starts
+					counting UIDs from 1000. This is important because file
+					attributes on the home partition will be stored by UID. In
+					other words, for the same user to be able to own the same
+					home folder on both OSs, they both must have the same UID.
+					I chose to manually specify the UID <code>1000</code> here
+					in FreeBSD, if only so I don't have to remember when I'm
+					installing Linux later.
+				</p>
+				<img loading="lazy" src="BSD-AddUser.png" alt="FreeBSD Installer:
+Add Users:
+Username: Naln1
+Full name: Lucy Osmond
+Uid (Leave empty for default): 1000
+Login group [naln1]:
+Login group is naln1. Invite naln1 into other groups? []: operator, wheel
+Group operator, does not exist!
+Login group is naln1. Invite naln1 into other groups? []: operator wheel
+Login class [default]:
+Shell (sh csh tcsh nologin) [sh]: csh
+Home directory [/home/naln1]:
+Home directory permissions (Leave empty for default):
+Use password-based authentication? [yes]:
+Use an empty password? (yes/no) [no]:
+Use a random password? (yes/no) [no]:
+Enter password:
+Enter password again:
+Lock out the account after creation? [no]:
+Username: naln1
+Password: *****
+Full Name: Lucy Osmond
+Uid: 1000
+Class:
+Groups: naln1 operator wheel
+Home: /home/naln1
+Home Mode:
+Shell: /bin/csh
+Locked: no
+OK? (yes/no) [yes]: ">
+				<p>
+					While I was here, I decided to create the other users for
+					the system. FreeBSD is smart enough to set the default UIDs
+					sequentially.
+				</p>
+				<p>
+					I proceeded to exit the installer, and replied <span style="color:black; background:DarkGray;">
+					<font color="red">Y</font>es</span> to Manual Configuration.
+				</p>
+				<p>
+					If you are following this method, this would be a good
+					opportunity to install your preferred shell and text editor,
+					because I spent a lot of time in this shell before rebooting.
+					I installed <code>fish</code> (Finally, a command line shell
+					for the 90s!) for my shell, and decided to use <code>ee</code>
+					as my text editor. If you choose to use a different shell or
+					editor you can substitute references to mine with your own
+					without affecting the results of the project.
+				</p>
+				<p>
+					I then opened <code>/etc/rc.conf</code> in <code>ee</code>
+					and added the line <code>zfs_enable="YES"</code>. This makes
+					the ZFS service script run on startup, to import ZFS pools.
+					Without this, the FreeBSD system would not be able to access
+					the ZFS partition.
+				</p>
+				<img loading="lazy" src="BSD-rcconf.png" alt="/etc/rc.conf open in ee. Before the cursor is a line 'zfs_enable=&quot;YES&quot;'">
+				<p>
+					I also created and opened <code>/boot/loader.conf</code> in
+					<code>ee</code> and added the line <code>zfs_load="YES"
+					</code>. This loads the kernel module for ZFS during boot,
+					which allows FreeBSD to be able to recognize ZFS partitions
+					as being valid filesystems at all.
+				</p>
+				<img loading="lazy" src="BSD-loaderconf.png" alt="/boot/loader.conf open in ee. The only line contains 'zfs_load=&quot;YES&quot;'">
+				<p>
+					These are the same steps FreeBSD would perform automatically
+					if we followed Guided setup with root on ZFS, but because
+					the system doesn't know exactly what we did with the
+					petitioning table, we have to do this manually. If not for
+					both of these steps, the kernel would freak out during boot
+					and throw me into single-user mode, and nobody wants to boot
+					into single-user mode if it can be avoided!
+				</p>
+				<p>
+					Normally FreeBSD imports ZFS pools using a cache file, and
+					that would be ✨wonderful✨ if I were a normal person doing
+					normal things. Unfortunately, I am not a normal person doing
+					normal things. In order to safely mount the same ZFS pool to
+					Linux, I need to export it on shutdown. But if a ZFS pool is
+					not imported when FreeBSD shuts down, it gets removed from
+					the cache file. So I had to manually inform FreeBSD to both
+					import the home partition on boot, and export the home
+					partition on shutdown.
+				</p>
+				<p>
+					I perceived the contents of <code>/etc/fstab</code> using
+					<code>cat</code>, to take careful note of the Device name
+					that associates with the <code>/home</code> mount. For me it
+					was simply called <code>home</code>, but that is likely to
+					differ due to reasons beyond our control.
+				</p>
+				<p>
+					During preliminary experimentation, I determined the best
+					way to export the zpool before shutdown on stock FreeBSD is
+					by modifying <code>/etc/rc.shutdown</code>. This is because
+					the <code>zpool</code> rc script does not actively run as a
+					daemon. Near the bottom of the file, I found a comment which
+					reads <code># Insert other shutdown procedures here</code>,
+					and&mdash;with a grimace&mdash;placed <code>zpool export
+					home</code> on its own line beneath that comment.
+				</p>
+				<p>
+					I propose a potential experiment to implement a <code>
+					rc.shutdown.d/</code> folder. However, that is unnecessary
+					for, and beyond the scope of this project. There is also
+					the secondary completed experiment of replacing FreeBSD's
+					init system with OpenRC like Artix, which will be appended
+					to this project.
+				</p>
+				<img loading="lazy" src="BSD-rcshutdown.png" alt="/etc/rc.shutdown open in ee. Beneath the comment &quot;Insert other shutdown procedures here&quot; is a new comment &quot;export the ZFS pool containing our home partition&quot;, and beneath that comment is 'zpool export home'">
+				<p>
+					I proceeded to edit <code>/etc/rc.d/zpool</code>. Inside the
+					function <code>zpool_start()</code>, on a new line just
+					above the line <code>local cachefile</code>, I added the
+					line <code>zpool import home</code>.
+				</p>
+				<img loading="lazy" src="BSD-zpoolservice.png" alt="/etc/rc.d/zpool open in ee. Beneath the { delimiting the oepning of the zpool_start() function, but above the line 'local cachefile' is a new line 'zpool import home'">
+				<p>
+					I decided to check my work by rebooting the system to make
+					sure FreeBSD actually boots without any hiccups. I <code>
+					exit</code>ed the shell(s), and then selected the
+					conveniently-presented <span style="color:black; background:DarkGray;">
+					<font color="red">R</font>eboot</span> option. In doing this,
+					I neglected the very important step of exporting the zpool
+					before exiting the shell. To get back on track, once I
+					was placed into single-user mode, I simply force mounted it with
+					<code>zpool import -f home</code>, exported it with <code>
+					zpool export home</code>, and then rebooted.
+				</p>
+				<p>
+					I logged in to my user, and ensured that my home directly is
+					sufficiently populated with default dotfiles by using <code>
+					ls -la</code>. I then proceeded to reboot the system with
+					<code>shutdown -r now</code>. It is important not to use the
+					similar <code>reboot</code>, as <code>reboot</code> doesn't
+					run <code>rc.shutdown</code>, therefore not exporting the
+					home partition ZFS pool, which would cause Artix to refuse
+					to mount the partition.
+				</p>
+				<p>
+					This time the computer booted up, I set the EFI to boot the
+					Artix live media instead of FreeBSD. I logged in to the live
+					user, and immediately ran <code>su</code>.
+				</p>
+				<p>
+					I made use of <code>fdisk -l</code> to determine what device
+					name I need for the Linux partition, by searching for the
+					device name whose Type is <code>Linux filesystem</code>,
+					which turned out to be <code>sda3</code>. I
+					then made the ext4 filesystem in that partition by running
+					<code>mkfs.ext4 /dev/sda3</code>.
+				</p>
+				<p>
+					I proceeded to install OpenZFS. <a href="https://wiki.artixlinux.org/Main/InstallationOnZFS">The Artix wiki suggests setting the live media up for SSH</a>,
+					but that adds more steps than necessary in an already
+					complex project, so I decided to skip that. I acquired
+					ArchZFS's PGP key using <code>curl -O https://archzfs.com/archzfs.gpg</code>,
+					imported the key into <code>pacman</code> with <code>pacman-key -a archzfs.gpg</code>,
+					and locally-signed the key with <code>pacman-key --lsign-key DDF7DB817396A49B2A2723F7403BD972F75D9D76</code>.
+					I then proceeded to add the ArchZFS repository to <code>/etc/pacman.conf</code> by appending the following snippet:
+				</p>
+<pre><code class="language-toml">[archzfs]
+Server = https://zxcvfdsa.com/archzfs/$repo/$arch</code></pre>
+				<p>
+					I chose the zxcvfdsa mirror over the upstream repository as
+					it was geographically closer to me than the upstream, and
+					because the upstream was hosted on Hetzner, whose published
+					opinion is that drawings of family-friendly lesbian relationships
+					constitutes pornography, while Linode&mdash;who hosts
+					zxcvfdsa&mdash;did not have a published opinion concerning
+					lesbian relationships at the time.
+					<br>
+					<strong>Revision 22/03/26:</strong> ArchZFS no longer hosts
+					their own repository nor touts any mirrors. Instead the
+					server URL should now be <code>https://github.com/archzfs/archzfs/releases/download/experimental</code>.
+				</p>
+				<p>
+					Finally I installed ArchZFS with <code>pacman -Sy archzfs-dkms</code>,
+					and enabled the ZFS kernel module with <code>modprobe zfs</code>.
+				</p>
+				<p>
+					Then I proceeded to mount all of the partitions. I mounted the
+					Linux root partition to <code>/mnt</code> with <code>mount
+					/dev/sda3 /mnt</code>. I created <code>/mnt/boot</code> for
+					the EFI boot partition using <code>mkdir /mnt/boot</code> and
+					mounted it with <code>mount /dev/sda1 /mnt/boot</code>. I
+					created <code>/mnt/home</code> for the home partition with
+					<code>mkdir /mnt/home</code>, imported the zpool with <code>
+					zpool import home</code>, set the ZFS mount point to legacy
+					with <code>zfs set mountpoint=legacy home</code> so it
+					behaves the same way as in FreeBSD, and finally mounted the
+					home partition with <code>mount -t zfs home /mnt/home</code>.
+				</p>
+				<p>
+					Then I finally installed Artix to the disk. Artix uses
+					<code>basestrap</code>, which is practically the same as
+					Arch's <code>pacstrap</code>. The excellent thing about both
+					of these tools is that it's basically a full <code>pacman</code>
+					for alternative roots. I installed the Artix base system and
+					all necessary extensions to the disk with one command,
+					<code>basestrap /mnt base openrc elogind-openrc linux
+					linux-firmware linux-headers dkms archzfs-dkms</code>,
+					deciding to hold off on installing convenience packages until
+					<code>chroot</code>ing into the new system. Then I generated
+					the FileSystem TABle with <code>fstabgen -U /mnt >>
+					/mnt/etc/fstab</code>, and copied <code>pacman.conf</code> from
+					the live media to the new Artix installation so the ArchZFS
+					repo is available to the new system with <code>cp
+					/etc/pacman.conf /mnt/etc/pacman.conf</code>.
+				</p>
+				<p>
+					I proceeded to chroot into my new Artix installation with
+					<code>artix-chroot /mnt</code>, install convenience packages
+					<code>fish</code> and <code>nano</code>, set up Time Zone
+					&amp; Locale, networking, and a root password. I created a
+					user with <code>useradd -m naln1</code>, where it warned me
+					that user's home directory already exists. This was fine
+					because FreeBSD already created that home directly, and
+					the whole point of this project is for both systems to have
+					the same home directory! Then I set that user's password
+					using <code>passwd naln1</code>.
+				</p>
+				<img loading="lazy" src="Artix-useraddnaln1.png" alt="root@localhost /# useradd -m naln1
+useradd: warning: the home directory /home/naln1 already exists.
+useradd: Not copying any file from skel directory into it.
+root@localhost /# passwd naln1
+New password:
+Retype new password:
+passwd: password updates successfully
+root@localhost /# ">
+				<p>
+					Then I created OpenRC service scripts to import and export
+					the zpool on startup and shutdown, because&mdash;unlike
+					FreeBSD&mdash;Artix doesn't automatically mount
+					previously-mounted ZFS partitions in any way. I created two
+					files in <code>/etc/init.d/</code>. I filled <code>/etc/init.d/zfs-import-home</code>
+					with
+<pre><code class="language-sh">#!/usr/bin/openrc-run
+
+depend() {
+    before localmount
+}
+
+start() {
+    ebegin "Importing Zpool 'home'"
+    /usr/bin/zpool import home
+    eend $?
+}</code></pre>
+					(this script can be downloaded from
+					<a href="https://code.naln1.ca/OpenRC-scripts/raw/tip/Artix/init.d/zfs-import-home">code.naln1.ca/OpenRC-scripts/raw/tip/Artix/init.d/zfs-import-home</a>)
+					<br>and I filled <code>/etc/init.d/zfs-export-home</code> with
+<pre><code class="language-sh">#!/usr/bin/openrc-run
+
+start() {
+    ebegin "Exporting Zpool 'home'"
+    /usr/bin/zpool export home
+    eend $?
+}</code></pre>
+					(this script can be downloaded from <a href="https://code.naln1.ca/OpenRC-scripts/raw/tip/Artix/init.d/zfs-export-home">code.naln1.ca/OpenRC-scripts/raw/tip/Artix/init.d/zfs-export-home</a>).<br>
+					Then I made the scripts executable with
+					<code>chmod +x /etc/init.d/zfs-import-home</code> &amp;
+					<code>chmod +x /etc/init.d/zfs-export-home</code>, and
+					enabled the services with <code>rc-update add zfs-import-home</code>
+					&amp; <code>rc-update add zfs-export-home shutdown</code>. I
+					made sure to set <code>zfs-export-home</code>'s runlevel to
+					<code>shutdown</code> so that it runs on shutdown instead of
+					during bootup, which would undo the <code>zfs-import-home</code>
+					service's hard work!
+				</p>
+				<p>
+					Then I used Artix as a vehicle to install the rEFInd boot
+					manager. A bootloader is necessary to load the two OSs.
+					Although FreeBSD can bootload itself, Linux unfortunately
+					cannot and needs something else&mdash;most commonly GRUB
+					&mdash;to get it to boot. However, I do not generally have
+					good results using GRUB, and therefore prefer to use rEFInd,
+					which also comes with the benefit of being a little prettier.
+					First I installed the rEFInd package with <code>pacman -S refind</code>.
+					In contrast to what you may expect, the rEFInd package
+					doesn't actually install rEFInd&mdash;it just installs the
+					ability to install rEFInd, so I actually installed rEFInd
+					with the aptly-named command <code>refind-install</code>.
+					Part of its output contained the line <code>Creating //boot/refind_linux.conf; edit it to adjust kernel options.</code>,
+					and I did proceed to edit <code>//boot/refind_linux.conf</code>
+					as rEFInd incorrectly tries to boot from the label of the
+					live media I was currently using instead of the drive Artix
+					was installed on (silly rEFInd 😅). The last line in <code>refind_linux.conf</code>
+					(<code>"Boot with minimal options"</code>) does however
+					contain the correct UUID, so I copied the
+					<code>root=UUID=f61c7459-4796-4086-824a-adc346679023</code>
+					to the beginnings of the first two lines, and removed the
+					<code>label=ARTIX_202308</code>s from those same lines.
+				</p>
+				<img loading="lazy" src="Artix-refindlinux1.png" alt="&quot;Boot with standard options&quot; &quot;lang=en_US keytable=us tz=UTC label=ARTIX_202308&quot;
+&quot;Boot to single-user mode&quot; &quot;lang=en_US keytable=us tz=UTC label=ARTIX_202308 single&quot;
+&quot;Boot with minimal options&quot; &quot;ro root=UUID=f61c7459-4796-4086-824a-adc346679023&quot;">
+				<img loading="lazy" src="Artix-refindlinux2.png" alt="&quot;Boot with standard options&quot; &quot;root=UUID=f61c7459-4796-4086-824a-adc346679023 lang=en_US keytable=us tz=UTC&quot;
+&quot;Boot to single-user mode&quot; &quot;root=UUID=f61c7459-4796-4086-824a-adc346679023 lang=en_US keytable=us tz=UTC single&quot;
+&quot;Boot with minimal options&quot; &quot;ro root=UUID=f61c7459-4796-4086-824a-adc346679023&quot;">
+				<p>
+					After that lengthy and tiring process, I was excited to be done!
+					However, I had to reboot into Artix and confirm everything
+					works as expected before I could declare success. I remembered
+					to run <code>zpool export home</code> before using <code>
+					shutdown -r now</code> to reboot the system. Thankfully I
+					was met with a&mdash;admittedly kitsch&mdash;rEFInd boot
+					screen!
+				</p>
+				<img loading="lazy" src="rEFInd-checkourwork.png" alt="rEFInd graphical boot manager displaying Linux and FreeBSD as boot options">
+				<p>
+					I then booted into Artix, and once again made sure the same
+					dotfiles from FreeBSD were there with <code>ls -la</code>,
+					as well as confirming the user and group owners match my
+					username (and not another user's, or an unassigned UID!).
+					I then proceeded to reboot back and forth between FreeBSD
+					and Artix to confirm the ZFS home partition is being
+					dismounted and remounted correctly for each boot.
+				</p>
+			</div>
+			<div class="window-content">
+				<h2>Conclusion</h2>
+				<p>
+					I was able to effectively boot two UNIX-like operating
+					systems, Artix Linux and FreeBSD, with one home partition
+					shared between them. It is a long and complicated process,
+					and requires using some bespoke methodology, but it seems
+					acceptably stable. However, this experiment is inconclusive
+					about long-term issues that may surface as a result of
+					continuing use of the system with the shared home partition.
+				</p>
+			</div>
+		</div>
+
+		<div class="window">
+			<div class="title">
+				<h1 style="display:inline;">Installing OpenRC on FreeBSD</h1>
+			</div>
+			<div class="window-content">
+				<h2>Abstract</h2>
+				<p>
+					This experiment investigated the feasibility of deploying
+					the OpenRC init system on FreeBSD. OpenRC was built from
+					source due to the absence of a precompiled package.
+					Custom service scripts were adapted to handle ZFS pool
+					management during system startup and shutdown, alongside
+					additional configuration of hostname, networking, and
+					urandom services to ensure compatibility with FreeBSD.
+				</p>
+				<p>
+					The system successfully booted into the OpenRC-managed
+					environment, demonstrating stable operation and correct
+					execution of configured services. Minor, non-critical
+					warnings were observed during shutdown but did not affect
+					functionality. The results indicate that OpenRC can be
+					effectively integrated into FreeBSD with modest adjustments.
+				</p>
+			</div>
+			<div class="window-content">
+				<h2>Introduction</h2>
+				<p>
+					Editing rc.shutdown directly to export the zpool on shutdown
+					is not preferable. OpenRC is actually tested against FreeBSD
+					during development, and we already have some OpenRC service
+					files we wrote for the zpools earlier, so why not install
+					OpenRC on FreeBSD to solve that problem, and for consistency
+					between both OSs?
+				</p>
+			</div>
+			<div class="window-content">
+				<h2>Method</h2>
+				<p>
+					As OpenRC was not available as a package for FreeBSD, I
+					determined that I must build it from source. By reading the
+					README file for OpenRC, I determined that I would need Git
+					to access the code, and Meson to build the software. So, I
+					installed Git &amp; Meson in one command with
+					<code>pkg install git meson</code>. I then cloned OpenRC's
+					Git repository with <code>https://github.com/OpenRC/openrc.git</code>
+					and descended into the source with <code>cd openrc</code>.
+				</p>
+				<p>
+					I determined, for the purpose of stability, that it would be
+					best to switch away from bleeding edge, to the most recent
+					stable tag, which was 0.54, with <code>git checkout tags/0.54</code>.
+				</p>
+				<p>
+					OpenRC's README.md states "OpenRC uses the meson build
+					system, so use the usual methods for this build system to
+					build and install.", however, I didn't have any
+					understanding of the Meson build system, so had to do much
+					research to learn this secret skill. I then carried out the
+					following process: create a directory for building in with
+					<code>mkdir build</code>, configure the build process with
+					<code>meson setup build</code>, build OpenRC with
+					<code>ninja -C build</code>, then finally install OpenRC
+					with <code>DESTDIR=/ ninja -C build install</code>.
+				</p>
+				<p>
+					Relieved that the build and installation was a relatively
+					simple process, I was excited to complete the
+					<span style="background-color:black"><font color=#F14729>N</font><font color=#FDE012>e</font><font color=#17AE65>X</font><font color=#E1038C>T</font></span>STEP:
+					configuring zpool import &amp; export. Using the same
+					method as described in <cite>Two OSs, One Home Partition</cite>,
+					although with slightly tweaked scripts, I created and enabled
+					OpenRC service scripts for importing and exporting the zpools
+					on startup and shutdown. The modified scripts may be
+					viewed/downloaded at
+					<a href="https://code.naln1.ca/OpenRC-scripts/raw/tip/FreeBSD/init.d/zfs-import-home">code.naln1.ca/OpenRC-scripts/raw/tip/FreeBSD/init.d/zfs-import-home</a>,
+					<a href="https://code.naln1.ca/OpenRC-scripts/raw/tip/FreeBSD/init.d/zfs-export-home">code.naln1.ca/OpenRC-scripts/raw/tip/FreeBSD/init.d/zfs-export-home</a>.
+				<p>
+				<p>
+					I then reconfigured my hostname at <code>/etc/conf.d/hostname</code>,
+					and my networking by appending <code>ifconfig_em0="!dhclient \$int"</code>
+					to <code>/etc/conf.d/network</code> for DHCP IP configuration.
+				</p>
+				<p>
+					I also made tweaks to the urandom initialisation service so
+					it functions correctly on FreeBSD. I edited <code>/etc/conf.d/urandom</code>,
+					setting the key <code>urandom_seed</code> to <code>/usr/lib/misc/random-seed</code>,
+					and then created the <code>misc</code> directory with
+					<code>mkdir /usr/lib/misc/</code>.
+				</p>
+				<p>
+					Then, I finally rebooted the system with <code>shutdown -r now</code>
+					to test the newly-installed OpenRC boot process.
+				</p>
+			</div>
+			<div class="window-content">
+				<h2>Result</h2>
+				<p>
+					The system booted effectively and without any complaints!
+				</p>
+				<img loading="lazy" style="max-width:50%" src="BSDOpenRC-boot1.png"><img loading="lazy" style="max-width:50%" src="BSDOpenRC-boot2.png">
+				<p>
+					On shutdown I noticed some complaints from OpenRC that
+					aren't matched by the startup services, but they do not seem
+					to impact the function of the system.
+				</p>
+			</div>
+			<div class="window-content">
+				<h2>Conclusion</h2>
+				<p>
+					OpenRC runs excellently on FreeBSD, with a little bit of
+					tweaking. All system resources seemingly function as
+					intended. However, there are no official OpenRC service
+					scripts for FreeBSD, so any new services added to FreeBSD
+					would require either writing a new service script, or
+					scrounging and modifying OpenRC scripts from Artix &amp;
+					Gentoo.
+				</p>
+			</div>
+		</div>
+	</body>
+</html>

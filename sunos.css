@@ -1,6 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap');
 
-@media screen and (orientation:landscape) {
+@media screen and (orientation:landscape) and (min-width: 60rem) {
 	body {
 		margin-left:	16vw;
 		margin-right:	16vw;
@@ -47,6 +47,33 @@ body {
 	border-style: groove;
 	border-width: 2pt;
 	border-color: #DB6097 #B24D7A #B24D7A #DB6097;
+}
+
+img {
+	max-width: 100%;
+	max-height: 50vh;
+	color: #6B5ACD;
+	white-space: pre-wrap;
+}
+
+pre code {
+	white-space: pre-wrap;
+}
+
+code {
+	white-space: nowrap;
+}
+
+
+th {
+	border-style: outset;
+	border-color: #CCD0E2 #7D8089 #7D8089 #CCD0E2;
+	border-width: 2pt;
+}
+
+td {
+	background-color: white;
+	color: black;
 }
 
 h1, h2, h3, h4, h6, h6 {
